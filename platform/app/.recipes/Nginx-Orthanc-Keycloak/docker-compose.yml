@@ -3,8 +3,8 @@ services:
     build:
       context: ./../../../../
       dockerfile: ./platform/app/.recipes/Nginx-Orthanc-Keycloak/dockerfile
-    image: webapp:latest
-    container_name: webapp
+    image: ohif/webapp-orthanc-kc:latest
+    container_name: ohif_webapp_orthanc_kc
     ports:
       - '443:443' # SSL
       - '80:80' # Web
@@ -29,7 +29,7 @@ services:
   orthanc:
     image: jodogne/orthanc-plugins
     hostname: orthanc
-    container_name: orthanc
+    container_name: ohif_orthanc_kc
     volumes:
       - ./config/orthanc.json:/etc/orthanc/orthanc.json:ro
       - ./volumes/orthanc-db/:/var/lib/orthanc/db/
@@ -41,7 +41,7 @@ services:
     image: quay.io/keycloak/keycloak:24.0.5
     command: 'start-dev --import-realm'
     hostname: keycloak
-    container_name: keycloak
+    container_name: ohif_keycloak_kc
     volumes:
       - ./config/ohif-keycloak-realm.json:/opt/keycloak/data/import/ohif-keycloak-realm.json
     environment:
@@ -52,8 +52,8 @@ services:
       KC_DB_SCHEMA: public
       KC_DB_USERNAME: keycloak
       KC_DB_PASSWORD: password
-      KC_HOSTNAME_ADMIN_URL: http://YOUR_DOMAIN/keycloak/
-      KC_HOSTNAME_URL: http://YOUR_DOMAIN/keycloak/
+      KC_HOSTNAME_ADMIN_URL: http://localhost/keycloak/
+      KC_HOSTNAME_URL: http://localhost/keycloak/
       KC_HOSTNAME_STRICT_BACKCHANNEL: true
       KC_HOSTNAME_STRICT_HTTPS: false
       KC_HTTP_ENABLED: true
@@ -80,7 +80,7 @@ services:
     healthcheck:
       test: [
           'CMD-SHELL',
-          "exec 3<>/dev/tcp/YOUR_DOMAIN/8080;echo -e \"GET /health/ready HTTP/1.1\r
+          "exec 3<>/dev/tcp/localhost/8080;echo -e \"GET /health/ready HTTP/1.1\r
 
           host: http://localhost\r
 
@@ -98,9 +98,9 @@ services:
   postgres:
     image: postgres:15
     hostname: postgres
-    container_name: postgres
+    container_name: ohif_postgres_kc
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data_orthanc_kc:/var/lib/postgresql/data
     environment:
       POSTGRES_DB: keycloak
       POSTGRES_USER: keycloak
@@ -111,14 +111,14 @@ services:
 
   certbot:
     image: certbot/certbot
-    container_name: certbot
+    container_name: ohif_certbot_kc
     volumes:
       - ./config/letsencrypt:/etc/letsencrypt
       - ./config/certbot:/var/www/certbot
     entrypoint:
       /bin/sh -c "trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;"
 volumes:
-  postgres_data:
+  postgres_data_orthanc_kc:
     driver: local
 
 networks:

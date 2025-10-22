@@ -192,7 +192,27 @@ function createDicomWebApi(dicomWebConfig: DicomWebConfig, servicesManager) {
 
           const results = await qidoSearch(qidoDicomWebClient, undefined, undefined, mappedParams);
 
-          return processResults(results);
+          // Post-filtering: allow only configured patients/studies if provided
+          const processed = processResults(results);
+          try {
+            const allowedPatientIDs: string[] | undefined =
+              (dicomWebConfig as any)?.allowedPatientIDs;
+            const allowedStudyInstanceUIDs: string[] | undefined =
+              (dicomWebConfig as any)?.allowedStudyInstanceUIDs;
+
+            if ((allowedPatientIDs && allowedPatientIDs.length) || (allowedStudyInstanceUIDs && allowedStudyInstanceUIDs.length)) {
+              return processed.filter(study => {
+                const pid = (study as any)?.PatientID || (study as any)?.Patient?.PatientID;
+                const suid = (study as any)?.StudyInstanceUID;
+                const okByPID = !allowedPatientIDs || (pid && allowedPatientIDs.includes(pid));
+                const okBySUID = !allowedStudyInstanceUIDs || (suid && allowedStudyInstanceUIDs.includes(suid));
+                return okByPID && okBySUID;
+              });
+            }
+          } catch (e) {
+            // swallow filtering errors to avoid breaking searches
+          }
+          return processed;
         },
         processResults: processResults.bind(),
       },

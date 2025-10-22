@@ -13,10 +13,14 @@ COPY ./ /usr/src/app/
 
 # Install node dependencies
 RUN yarn config set workspaces-experimental true
+RUN yarn config set registry https://registry.npmmirror.com
+RUN yarn config set network-timeout 600000
 RUN yarn install
 
 # Set the environment for the build
-ENV APP_CONFIG=config/docker-nginx-dcm4chee-keycloak.js
+ENV APP_CONFIG=config/docker-nginx-dcm4chee.js
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+ENV GENERATE_SOURCEMAP=false
 
 # Build the application
 RUN yarn run build

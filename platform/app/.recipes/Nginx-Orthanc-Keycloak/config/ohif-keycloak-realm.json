@@ -679,19 +679,19 @@
       "clientId": "ohif_viewer",
       "name": "",
       "description": "",
-      "rootUrl": "http://127.0.0.1",
-      "adminUrl": "http://127.0.0.1",
-      "baseUrl": "http://127.0.0.1",
+      "rootUrl": "http://localhost",
+      "adminUrl": "http://localhost",
+      "baseUrl": "http://localhost",
       "surrogateAuthRequired": false,
       "enabled": true,
       "alwaysDisplayInConsole": false,
       "clientAuthenticatorType": "client-secret",
       "secret": "2Xtlde7aozdkzzYHdIxQNfPDr0wNPTgg",
       "redirectUris": [
-        "http://127.0.0.1/oauth2/callback"
+        "http://localhost/oauth2/callback"
       ],
       "webOrigins": [
-        "http://127.0.0.1"
+        "http://localhost"
       ],
       "notBefore": 0,
       "bearerOnly": false,

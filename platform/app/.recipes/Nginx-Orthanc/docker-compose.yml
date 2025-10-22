@@ -10,8 +10,8 @@ services:
       context: ./../../../../
       # Relative to context
       dockerfile: ./platform/app/.recipes/Nginx-Orthanc/dockerfile
-    image: webapp:latest
-    container_name: ohif_orthanc
+    image: ohif/webapp-orthanc:latest
+    container_name: ohif_orthanc_recipe
     volumes:
       # Nginx config
       - ./config/nginx.conf:/etc/nginx/nginx.conf
@@ -34,7 +34,7 @@ services:
   orthanc:
     image: jodogne/orthanc-plugins
     hostname: orthanc
-    container_name: orthancPACS
+    container_name: ohif_orthanc_recipe_pacs
     volumes:
       # Config
       - ./config/orthanc.json:/etc/orthanc/orthanc.json:ro
