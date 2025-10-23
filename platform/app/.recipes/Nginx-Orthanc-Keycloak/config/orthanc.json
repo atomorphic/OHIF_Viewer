@@ -80,7 +80,7 @@
     "Root": "/dicom-web/",
     "EnableWado": true,
     "WadoRoot": "/wado",
-    "Host": "127.0.0.1",
+    "Host": "localhost",
     "Ssl": false,
     "StowMaxInstances": 10,
     "StowMaxSize": 10,

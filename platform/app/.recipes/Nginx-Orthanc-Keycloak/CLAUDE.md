@@ -21,11 +21,11 @@ docker-compose up --build
 ```
 
 This starts all services:
-- OHIF Viewer: http://localhost/ (redirects to /ohif-viewer/)
-- Keycloak Admin: http://localhost/keycloak/
-- Orthanc Admin UI: http://localhost/pacs-admin/ (requires pacsadmin group)
-- PACS DICOMweb API: http://localhost/pacs/ (authenticated)
-- Orthanc Direct Access: http://localhost:8042 (accessible from host only)
+- OHIF Viewer: http://localhost/ or http://[::1]/ (redirects to /ohif-viewer/)
+- Keycloak Admin: http://localhost/keycloak/ or http://[::1]/keycloak/
+- Orthanc Admin UI: http://localhost/pacs-admin/ or http://[::1]/pacs-admin/ (requires pacsadmin group)
+- PACS DICOMweb API: http://localhost/pacs/ or http://[::1]/pacs/ (authenticated)
+- Keycloak Direct Access: http://localhost:8080 or http://[::1]:8080 (accessible from host only)
 
 ### Current Configuration
 
@@ -238,6 +238,44 @@ docker-compose up -d
 - **DICOMweb root**: `/dicom-web/`
 - **Auth**: Disabled in Orthanc itself (authentication handled by Nginx + OAuth2 Proxy)
 - **Storage**: `/var/lib/orthanc/db` (persisted in `./volumes/orthanc-db/`)
+
+## Recent Fixes (October 2025)
+
+### Fixed ERR_CONNECTION_CLOSED Issue
+
+**Problem**: OHIF Viewer returned ERR_CONNECTION_CLOSED while other services worked.
+
+**Root Causes**:
+1. **Nginx configuration**: The `/ohif-viewer/` location block was using `proxy_set_header` directives without `proxy_pass`, and `try_files` was looking for files in the wrong directory.
+2. **Orthanc DICOMweb Root**: The `DicomWeb.Root` was set to `/pacs/` instead of `/dicom-web/`, causing 404 errors.
+3. **OAuth2 Proxy whitelist**: Missing `whitelist_domains` configuration caused redirect rejections.
+
+**Solutions Applied**:
+1. **[config/nginx.conf:145-159](config/nginx.conf#L145-L159)**: Changed `/ohif-viewer/` location to use `alias /var/www/html/;` instead of incorrect proxy configuration.
+2. **[config/orthanc.json:80](config/orthanc.json#L80)**: Changed `DicomWeb.Root` from `/pacs/` to `/dicom-web/`.
+3. **[config/oauth2-proxy.cfg:10](config/oauth2-proxy.cfg#L10)**: Added `whitelist_domains=["localhost", "127.0.0.1", "[::1]"]`.
+
+### Fixed HTTPS Support
+
+**Problem**: Only HTTP was working, HTTPS connections failed.
+
+**Root Causes**:
+1. **Missing HTTPS server block**: Nginx was only configured to listen on port 80 (HTTP), not port 443 (HTTPS).
+2. **OAuth2 Proxy misconfiguration**: The `oidc_issuer_url` was set to `http://localhost/keycloak/` which doesn't work from inside the container.
+
+**Solutions Applied**:
+1. **[config/nginx.conf:186-350](config/nginx.conf#L186-L350)**: Added complete HTTPS server block with SSL certificate configuration, mirroring all HTTP location blocks.
+2. **[config/oauth2-proxy.cfg:22](config/oauth2-proxy.cfg#L22)**: Changed `oidc_issuer_url` from `http://localhost/keycloak/realms/ohif` to `http://keycloak:8080/realms/ohif` to use Docker internal networking.
+
+**Result**: Both HTTP and HTTPS now work properly with authentication.
+
+### WSL2 Docker Bind Mount Issue
+
+When editing configuration files, Docker may fail to restart containers with bind mount errors in WSL2. Solution:
+```bash
+docker-compose down && docker-compose up -d
+```
+Complete stop/start cycle refreshes bind mounts properly.
 
 ## Troubleshooting
 
