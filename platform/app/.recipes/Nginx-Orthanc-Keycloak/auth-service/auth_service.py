@@ -227,13 +227,13 @@ def get_user_profile():
             logger.info(f"Response length: {len(response_data)}")
             return Response(response_data, mimetype='application/json', status=200)
 
-        # Annotators have access to their team label
-        if 'annotatorA' in groups:
-            authorized_labels.append('ann-teamA')
-        if 'annotatorB' in groups:
-            authorized_labels.append('ann-teamB')
-        if 'annotatorC' in groups:
-            authorized_labels.append('ann-teamC')
+        # Annotators have access to their study label
+        if 'annotatora' in groups:
+            authorized_labels.append('userA-study')
+        if 'annotatorb' in groups:
+            authorized_labels.append('userB-study')
+        if 'annotatorc' in groups:
+            authorized_labels.append('userC-study')
 
         # Add project labels - all annotators can see studies with these labels
         # (but only their own annotations on those studies)
@@ -241,12 +241,14 @@ def get_user_profile():
 
         logger.info(f"User {username} authorized labels: {authorized_labels}")
 
-        response_data = json.dumps({
+        profile = {
             "name": username,
-            "authorized_labels": authorized_labels,  # Use underscore not hyphen
-            "permissions": ["view", "download"]
-        })
-        return Response(response_data, mimetype='application/json')
+            "authorized_labels": authorized_labels,
+            "permissions": ["view"]
+        }
+        response_data = json.dumps(profile, separators=(',', ':'), ensure_ascii=True)
+        logger.info(f"Responding with: {response_data}")
+        return Response(response_data, mimetype='application/json', status=200)
 
     except Exception as e:
         logger.error(f"User profile error: {e}", exc_info=True)

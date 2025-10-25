@@ -34,7 +34,6 @@
   "SslCertificate": "certificate.pem",
   "AuthenticationEnabled": false,
   "RegisteredUsers": {
-    "test": "test"
   },
   "DicomModalities": {},
   "DicomModalitiesInDatabase": false,
