@@ -113,6 +113,45 @@ Two users are pre-configured in Keycloak (defined in `config/ohif-keycloak-realm
 - **postgres_data_orthanc_kc**: Keycloak database
 - **./volumes/orthanc-db/**: Orthanc DICOM storage (on host filesystem)
 
+## Double-Blind Annotation Authorization
+
+**NEW**: This recipe now includes a complete double-blind annotation authorization system!
+
+See **[AUTHORIZATION.md](AUTHORIZATION.md)** for complete documentation.
+
+### Quick Overview
+
+- **3 User Groups**: `annotatorA`, `annotatorB`, `senior`
+- **Label-Based Access Control**: Studies and annotations are labeled
+- **Automatic Annotation Labeling**: SEG/SR instances auto-labeled on upload
+- **Authorization Service**: Python Flask service enforces access rules
+- **Test Accounts**:
+  - `annotatorA` / `annotatorA` - Can only see own annotations
+  - `annotatorB` / `annotatorB` - Can only see own annotations
+  - `senior` / `senior` - Can see all annotations
+
+### How It Works
+
+1. User logs in via Keycloak
+2. oauth2-proxy adds `X-Remote-User` and `X-Forwarded-Groups` headers
+3. Nginx forwards headers to Orthanc
+4. Orthanc Authorization plugin queries auth service for each request
+5. Auth service checks labels and groups to grant/deny access
+6. Python plugin auto-labels new annotations based on uploader's group
+
+### Testing
+
+```bash
+# Run automated tests
+./test-authorization.sh
+
+# Start services
+docker-compose up --build -d
+
+# Check logs
+docker logs -f ohif_auth_service_kc
+```
+
 ## User Management
 
 ### Creating New Users

@@ -413,6 +413,42 @@
       "attributes": {},
       "realmRoles": [],
       "clientRoles": {}
+    },
+    {
+      "id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
+      "name": "annotatorA",
+      "path": "/annotatorA",
+      "subGroups": [],
+      "attributes": {},
+      "realmRoles": [],
+      "clientRoles": {}
+    },
+    {
+      "id": "b2c3d4e5-f6a7-4b5c-9d0e-1f2a3b4c5d6e",
+      "name": "annotatorB",
+      "path": "/annotatorB",
+      "subGroups": [],
+      "attributes": {},
+      "realmRoles": [],
+      "clientRoles": {}
+    },
+    {
+      "id": "c3d4e5f6-a7b8-4c5d-0e1f-2a3b4c5d6e7f",
+      "name": "senior",
+      "path": "/senior",
+      "subGroups": [],
+      "attributes": {},
+      "realmRoles": [],
+      "clientRoles": {}
+    },
+    {
+      "id": "d4e5f6a7-b8c9-4d5e-1f2a-3b4c5d6e7f8a",
+      "name": "annotatorC",
+      "path": "/annotatorC",
+      "subGroups": [],
+      "attributes": {},
+      "realmRoles": [],
+      "clientRoles": {}
     }
   ],
   "defaultRole": {
@@ -727,6 +763,20 @@
             "lightweight.claim": "false",
             "access.token.claim": "true",
             "introspection.token.claim": "true"
+          }
+        },
+        {
+          "id": "groups-mapper-12345",
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
           }
         }
       ],
@@ -2310,6 +2360,66 @@
         }
       ],
       "groups": ["pacsadmin"]
+    },
+    {
+      "username": "annotatorA",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Annotator",
+      "lastName": "A",
+      "email": "annotatorA@mail.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "annotatorA"
+        }
+      ],
+      "groups": ["annotatorA"]
+    },
+    {
+      "username": "annotatorB",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Annotator",
+      "lastName": "B",
+      "email": "annotatorB@mail.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "annotatorB"
+        }
+      ],
+      "groups": ["annotatorB"]
+    },
+    {
+      "username": "senior",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Senior",
+      "lastName": "Reviewer",
+      "email": "senior@mail.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "senior"
+        }
+      ],
+      "groups": ["senior"]
+    },
+    {
+      "username": "annotatorC",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Annotator",
+      "lastName": "C",
+      "email": "annotatorC@mail.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "annotatorC"
+        }
+      ],
+      "groups": ["annotatorC"]
     }
   ]
 }

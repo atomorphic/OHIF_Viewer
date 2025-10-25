@@ -33,9 +33,12 @@ services:
     volumes:
       - ./config/orthanc.json:/etc/orthanc/orthanc.json:ro
       - ./volumes/orthanc-db/:/var/lib/orthanc/db/
+      - ./orthanc-python:/etc/orthanc/python:ro
     restart: unless-stopped
     networks:
       - default
+    depends_on:
+      - auth_service
 
   keycloak:
     image: quay.io/keycloak/keycloak:24.0.5
@@ -108,6 +111,22 @@ services:
     restart: unless-stopped
     networks:
       - default
+
+  auth_service:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    image: ohif/auth-service:latest
+    container_name: ohif_auth_service_kc
+    hostname: auth-service
+    restart: unless-stopped
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   certbot:
     image: certbot/certbot
