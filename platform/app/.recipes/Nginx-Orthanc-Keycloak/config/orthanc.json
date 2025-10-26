@@ -88,16 +88,7 @@
     "QidoCaseSensitive": false
   },
 
-  "AuthorizationDisabledDueToFormatIssue": {
-    "WebServiceRootUrl": "http://auth-service:8000/auth",
-    "WebServiceUsername": "",
-    "WebServicePassword": "",
-    "StandardConfigurations": ["osimis-web-viewer"],
-    "TokenHttpHeaders": ["x-remote-user", "x-forwarded-groups"],
-    "TokenGetArguments": [],
-    "UncheckedResources": ["/", "/system", "/statistics", "/tools", "/app", "/plugins", "/changes"],
-    "UncheckedFolders": ["/ui/", "/app/"],
-    "CheckedLevel": "studies",
-    "NOTE": "Authorization plugin rejects all JSON formats we send - 'List of strings expected in field: permissions' error persists despite sending valid JSON arrays. Needs investigation of Orthanc plugin version compatibility."
+  "AuthorizationDISABLED": {
+    "note": "Disabled to establish baseline - will re-enable with working config"
   }
 }

@@ -4,13 +4,38 @@ Authorization service for Orthanc
 Implements double-blind annotation access control based on labels and groups
 """
 
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, make_response, redirect
 import json
 import logging
+import jwt
+from datetime import datetime, timedelta
+import hashlib
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Secret key for JWT signing (in production, use environment variable)
+JWT_SECRET = "your-secret-key-change-in-production"
+
+# Simple user database (in production, validate against Keycloak API)
+USERS = {
+    "userA": {"password": "passwordA", "groups": ["annotatorA"]},
+    "userB": {"password": "passwordB", "groups": ["annotatorB"]},
+    "admin": {"password": "admin123", "groups": ["pacsadmin"]}
+}
+
+# Add after_request handler to log all responses
+@app.after_request
+def log_response(response):
+    if request.path.startswith('/auth/user/get-profile'):
+        logger.info(f">>> RESPONSE START <<<")
+        logger.info(f"Status: {response.status}")
+        logger.info(f"Headers: {dict(response.headers)}")
+        logger.info(f"Body (raw bytes): {response.get_data()}")
+        logger.info(f"Body (text): {response.get_data(as_text=True)}")
+        logger.info(f">>> RESPONSE END <<<")
+    return response
 
 @app.route('/auth', methods=['POST'])
 def authorize():
@@ -144,8 +169,13 @@ def get_user_profile():
     }
     """
     try:
+        # Log ALL request details
+        logger.info(f"=== User Profile Request ===")
+        logger.info(f"Headers: {dict(request.headers)}")
+        logger.info(f"Content-Type: {request.content_type}")
+        logger.info(f"Method: {request.method}")
         data = request.json or {}
-        logger.info(f"User profile request: {data}")
+        logger.info(f"JSON Body: {data}")
 
         # Extract username and groups from tokens array (Orthanc format)
         username = ''
@@ -213,26 +243,32 @@ def get_user_profile():
         # Determine authorized labels based on groups
         authorized_labels = []
 
+        # Convert groups to lowercase for case-insensitive comparison
+        groups_lower = [g.lower() for g in groups]
+
         # Admin and senior have access to all labels (wildcard)
-        if 'pacsadmin' in groups or 'senior' in groups:
+        if 'pacsadmin' in groups_lower or 'senior' in groups_lower:
             logger.info(f"Admin/Senior profile - full access")
-            # Use json.dumps to ensure proper formatting
+            # Note: permissions must be explicit list, not ["all"]
+            # IMPORTANT: Don't use jsonify() - it adds trailing newline which Orthanc rejects
+            # Try hyphenated field name
             profile = {
                 "name": username,
-                "authorized_labels": ["*"],
-                "permissions": ["all"]
+                "permissions": ["view", "download", "modify", "upload", "delete", "share"],
+                "authorized-labels": ["*"]
             }
-            response_data = json.dumps(profile, separators=(',', ':'), ensure_ascii=True)
-            logger.info(f"Responding with: {response_data}")
-            logger.info(f"Response length: {len(response_data)}")
-            return Response(response_data, mimetype='application/json', status=200)
+            logger.info(f"=== User Profile Response ===")
+            logger.info(f"Profile dict: {profile}")
+            # Use json.dumps() with Response to avoid trailing newline
+            json_data = json.dumps(profile, separators=(',', ':'))
+            return Response(json_data, mimetype='application/json', status=200)
 
         # Annotators have access to their study label
-        if 'annotatora' in groups:
+        if 'annotatora' in groups_lower:
             authorized_labels.append('userA-study')
-        if 'annotatorb' in groups:
+        if 'annotatorb' in groups_lower:
             authorized_labels.append('userB-study')
-        if 'annotatorc' in groups:
+        if 'annotatorc' in groups_lower:
             authorized_labels.append('userC-study')
 
         # Add project labels - all annotators can see studies with these labels
@@ -243,12 +279,13 @@ def get_user_profile():
 
         profile = {
             "name": username,
-            "authorized_labels": authorized_labels,
+            "authorized-labels": authorized_labels,
             "permissions": ["view"]
         }
-        response_data = json.dumps(profile, separators=(',', ':'), ensure_ascii=True)
-        logger.info(f"Responding with: {response_data}")
-        return Response(response_data, mimetype='application/json', status=200)
+        logger.info(f"Responding with profile: {profile}")
+        # Use json.dumps() with Response to avoid trailing newline
+        json_data = json.dumps(profile, separators=(',', ':'))
+        return Response(json_data, mimetype='application/json', status=200)
 
     except Exception as e:
         logger.error(f"User profile error: {e}", exc_info=True)
@@ -280,6 +317,283 @@ def decode_token():
 def health():
     """Health check endpoint"""
     return jsonify({"status": "healthy"})
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """
+    Simple login page and authentication
+    GET: Returns login HTML page
+    POST: Validates credentials and sets JWT cookie
+    """
+    if request.method == 'GET':
+        # Return simple login page
+        html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>OHIF Login</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                    background: #f0f0f0;
+                }
+                .login-box {
+                    background: white;
+                    padding: 40px;
+                    border-radius: 10px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                    width: 300px;
+                }
+                h2 {
+                    margin-top: 0;
+                    color: #333;
+                }
+                input {
+                    width: 100%;
+                    padding: 10px;
+                    margin: 10px 0;
+                    border: 1px solid #ddd;
+                    border-radius: 5px;
+                    box-sizing: border-box;
+                }
+                button {
+                    width: 100%;
+                    padding: 10px;
+                    background: #5755d9;
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    cursor: pointer;
+                    font-size: 16px;
+                }
+                button:hover {
+                    background: #4542c7;
+                }
+                .error {
+                    color: red;
+                    margin-top: 10px;
+                }
+                .info {
+                    color: #666;
+                    font-size: 12px;
+                    margin-top: 20px;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="login-box">
+                <h2>OHIF Viewer Login</h2>
+                <form method="POST" action="/login">
+                    <input type="text" name="username" placeholder="Username" required>
+                    <input type="password" name="password" placeholder="Password" required>
+                    <button type="submit">Login</button>
+                </form>
+                <div class="info">
+                    Test accounts:<br>
+                    userA / passwordA<br>
+                    userB / passwordB<br>
+                    admin / admin123
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        return html
+
+    # POST: Validate credentials
+    try:
+        username = request.form.get('username', '')
+        password = request.form.get('password', '')
+
+        logger.info(f"Login attempt for user: {username}")
+
+        # Validate credentials
+        if username not in USERS or USERS[username]['password'] != password:
+            logger.info(f"Login failed for user: {username}")
+            return """
+            <html>
+            <body>
+                <h2>Login Failed</h2>
+                <p style="color: red;">Invalid username or password</p>
+                <a href="/login">Try again</a>
+            </body>
+            </html>
+            """, 401
+
+        # Create JWT token
+        user_data = USERS[username]
+        token = jwt.encode({
+            'username': username,
+            'groups': user_data['groups'],
+            'exp': datetime.utcnow() + timedelta(hours=8)
+        }, JWT_SECRET, algorithm='HS256')
+
+        logger.info(f"Login successful for user: {username}, groups: {user_data['groups']}")
+
+        # Set cookie and redirect to OHIF
+        response = make_response(redirect('/', 302))
+        response.set_cookie('auth_token', token, httponly=True, max_age=28800)  # 8 hours
+        return response
+
+    except Exception as e:
+        logger.error(f"Login error: {e}", exc_info=True)
+        return "Login error", 500
+
+
+@app.route('/auth/validate', methods=['GET'])
+def validate_session():
+    """
+    Validate JWT token from cookie
+    Called by nginx auth_request
+    Returns 200 with X-User-Groups header if valid, 401 if invalid
+    """
+    try:
+        token = request.cookies.get('auth_token')
+
+        if not token:
+            logger.info("No auth token found in cookies")
+            return Response('', status=401)
+
+        # Decode and validate JWT
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+            username = payload.get('username')
+            groups = payload.get('groups', [])
+
+            logger.info(f"Valid token for user: {username}, groups: {groups}")
+
+            # Return success with groups in header
+            response = Response('', status=200)
+            response.headers['X-User-Groups'] = ','.join(groups)
+            response.headers['X-User-Name'] = username
+            return response
+
+        except jwt.ExpiredSignatureError:
+            logger.info("Token expired")
+            return Response('', status=401)
+        except jwt.InvalidTokenError as e:
+            logger.info(f"Invalid token: {e}")
+            return Response('', status=401)
+
+    except Exception as e:
+        logger.error(f"Session validation error: {e}", exc_info=True)
+        return Response('', status=401)
+
+
+@app.route('/filter/studies', methods=['GET'])
+def filter_studies():
+    """
+    Filter studies based on user's authorized labels
+    Returns only studies that the user is authorized to see
+    """
+    import requests
+
+    try:
+        # Get user's groups from header
+        groups_header = request.headers.get('X-Forwarded-Groups', '')
+        groups = [g.strip().lower() for g in groups_header.split(',') if g.strip()]
+
+        logger.info(f"Filter studies request for groups: {groups}")
+
+        # Admin/senior see all studies
+        if 'pacsadmin' in groups or 'senior' in groups:
+            logger.info("Admin/senior - returning all studies")
+            response = requests.get('http://orthanc:8042/dicom-web/studies', params=request.args)
+            return Response(response.content, status=response.status_code, content_type=response.headers.get('Content-Type'))
+
+        # Get all studies from Orthanc
+        studies_response = requests.get('http://orthanc:8042/dicom-web/studies', params=request.args)
+        if studies_response.status_code != 200:
+            return Response(studies_response.content, status=studies_response.status_code)
+
+        studies = studies_response.json()
+        filtered_studies = []
+
+        # Filter based on labels
+        for study in studies:
+            # Get study's Orthanc ID from DICOMweb response
+            study_id = study.get('0020000D', {}).get('Value', [None])[0]
+            logger.info(f"Processing study with StudyInstanceUID: {study_id}")
+            if not study_id:
+                logger.info("  No StudyInstanceUID found, skipping")
+                continue
+
+            # Get Orthanc internal ID using /tools/find
+            logger.info(f"  Looking up Orthanc ID for StudyInstanceUID: {study_id}")
+            find_response = requests.post('http://orthanc:8042/tools/find', json={
+                "Level": "Study",
+                "Query": {
+                    "StudyInstanceUID": study_id
+                },
+                "Expand": False
+            })
+            logger.info(f"  Find response status: {find_response.status_code}")
+            if find_response.status_code != 200:
+                logger.info(f"  Find failed, skipping")
+                continue
+
+            orthanc_ids = find_response.json()
+            logger.info(f"  Find result: {orthanc_ids}")
+            if not orthanc_ids:
+                logger.info(f"  No Orthanc IDs found, skipping")
+                continue
+
+            orthanc_study_id = orthanc_ids[0]
+            logger.info(f"  Orthanc study ID: {orthanc_study_id}")
+
+            # Get study's labels
+            labels_response = requests.get(f'http://orthanc:8042/studies/{orthanc_study_id}/labels')
+            logger.info(f"  Labels response status: {labels_response.status_code}")
+            if labels_response.status_code != 200:
+                logger.info(f"  Failed to get labels, skipping")
+                continue
+
+            labels = labels_response.json()
+            logger.info(f"Study {orthanc_study_id} has labels: {labels}")
+
+            # Check if user is authorized
+            authorized = False
+            for group in groups:
+                # annotatorA can see studies labeled "userA-study"
+                if group == 'annotatora' and 'userA-study' in labels:
+                    authorized = True
+                    break
+                # annotatorB can see studies labeled "userB-study"
+                elif group == 'annotatorb' and 'userB-study' in labels:
+                    authorized = True
+                    break
+
+            if authorized:
+                filtered_studies.append(study)
+                logger.info(f"✓ Study {orthanc_study_id} authorized for {groups}")
+            else:
+                logger.info(f"✗ Study {orthanc_study_id} NOT authorized for {groups}")
+
+        logger.info(f"Returning {len(filtered_studies)} of {len(studies)} studies")
+        return jsonify(filtered_studies)
+
+    except Exception as e:
+        logger.error(f"Filter studies error: {e}", exc_info=True)
+        return jsonify([]), 500
+
+
+@app.route('/test/user-profile', methods=['GET'])
+def test_user_profile():
+    """Test endpoint to verify user profile format"""
+    # Return a test admin profile
+    profile = {
+        "name": "test-admin",
+        "permissions": ["view", "download", "modify", "upload", "delete", "share"],
+        "authorized_labels": ["*"]
+    }
+    logger.info(f"Test profile: {profile}")
+    return jsonify(profile)
 
 
 if __name__ == '__main__':
