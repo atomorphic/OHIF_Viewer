@@ -99,15 +99,15 @@ Configured in `auth-service/auth_service.py`:
 USERS = {
     "userA": {"password": "passwordA", "groups": ["annotatorA"]},
     "userB": {"password": "passwordB", "groups": ["annotatorB"]},
-    "admin": {"password": "admin123", "groups": ["pacsadmin"]}
+    "supervisor": {"password": "supervisor", "groups": ["pacsadmin"]}
 }
 ```
 
-| Username | Password   | Groups       | Access                          |
-|----------|------------|--------------|----------------------------------|
-| userA    | passwordA  | annotatorA   | Study 1 (LIDC-IDRI-0001) only   |
-| userB    | passwordB  | annotatorB   | Study 2 (LIDC-IDRI-0004) only   |
-| admin    | admin123   | pacsadmin    | All studies                      |
+| Username   | Password   | Groups       | Access                          |
+|------------|------------|--------------|----------------------------------|
+| userA      | passwordA  | annotatorA   | Study 1 (LIDC-IDRI-0001) only   |
+| userB      | passwordB  | annotatorB   | Study 2 (LIDC-IDRI-0004) only   |
+| supervisor | supervisor | pacsadmin    | All studies                      |
 
 ## Testing
 
@@ -130,13 +130,13 @@ curl -s -b /tmp/cookies_userB.txt http://localhost/api/dicom-web/studies \
   | python3 -c "import sys, json; data = json.load(sys.stdin); print(f'UserB sees {len(data)} studies')"
 # Output: UserB sees 1 studies
 
-# Test admin
-curl -s -c /tmp/cookies_admin.txt -b /tmp/cookies_admin.txt \
-  -d "username=admin&password=admin123" http://localhost/login
+# Test supervisor
+curl -s -c /tmp/cookies_supervisor.txt -b /tmp/cookies_supervisor.txt \
+  -d "username=supervisor&password=supervisor" http://localhost/login
 
-curl -s -b /tmp/cookies_admin.txt http://localhost/api/dicom-web/studies \
-  | python3 -c "import sys, json; data = json.load(sys.stdin); print(f'Admin sees {len(data)} studies')"
-# Output: Admin sees 2 studies
+curl -s -b /tmp/cookies_supervisor.txt http://localhost/api/dicom-web/studies \
+  | python3 -c "import sys, json; data = json.load(sys.stdin); print(f'Supervisor sees {len(data)} studies')"
+# Output: Supervisor sees 2 studies
 ```
 
 ### Browser Testing
@@ -238,7 +238,7 @@ USERS = {
     "userA": {"password": "passwordA", "groups": ["annotatorA"]},
     "userB": {"password": "passwordB", "groups": ["annotatorB"]},
     "userC": {"password": "passwordC", "groups": ["annotatorC"]},  # New user
-    "admin": {"password": "admin123", "groups": ["pacsadmin"]}
+    "supervisor": {"password": "supervisor", "groups": ["pacsadmin"]}
 }
 ```
 
@@ -408,6 +408,229 @@ The system successfully demonstrated that userA and userB can access the same OH
 
 ---
 
+## SR (Structured Report) Authorization - October 28, 2025
+
+### Problem
+
+When users created SR (Structured Report) annotations and returned to the study, they could not see their own SR reports. The issue was that:
+
+1. SR creation and labeling worked correctly (verified in logs)
+2. Metadata filtering endpoint worked correctly
+3. **BUT**: OHIF requests `/api/dicom-web/studies/{studyUID}/series` to get the series list
+4. This endpoint was NOT filtered, so it showed ALL series including SRs from other users
+5. When OHIF tried to load metadata for those series, the metadata filter correctly blocked them
+6. Result: Users saw partial/broken SR series in the UI
+
+### Solution: Series Filtering Endpoint
+
+Added a new filtering layer at the series level to hide unauthorized SR series before OHIF even tries to load them.
+
+#### Implementation
+
+**1. Auth Service - Series Filter Endpoint** ([auth_service.py:780-917](auth-service/auth_service.py#L780-L917))
+
+```python
+@app.route('/filter/series/<path:path>', methods=['GET'])
+def filter_series(path):
+    """
+    Filter series to hide SR series that don't belong to the user
+    Path format: studies/{studyUID}/series
+    """
+    # Get user's groups from header
+    groups_header = request.headers.get('X-Forwarded-Groups', '')
+    groups = [g.strip().lower() for g in groups_header.split(',') if g.strip()]
+
+    # Admin sees everything
+    if 'pacsadmin' in groups or 'senior' in groups:
+        return all_series
+
+    # For each series:
+    # 1. Check if it contains SR instances (via SOPClassUID)
+    # 2. If SR: check instance labels
+    # 3. Filter out SRs that don't belong to user's group
+    # 4. Include all non-SR series
+```
+
+**Logic Flow:**
+- Retrieves series list from Orthanc
+- For each series:
+  - Finds series in Orthanc by SeriesInstanceUID
+  - Gets first instance in series
+  - Checks SOPClassUID to identify if it's an SR series (`1.2.840.10008.5.1.4.1.1.88`)
+  - If SR: checks instance labels (userA-sr, userB-sr, admin-sr)
+  - Only includes SR series if user is authorized
+  - Always includes non-SR series (images)
+
+**2. Nginx Configuration Updates**
+
+Added routing for series endpoint in both HTTP (line 189-203) and HTTPS (line 538-552) server blocks:
+
+```nginx
+# Series endpoints - filter to hide unauthorized SR series
+location ~ ^/api/dicom-web/studies/([^/]+)/series$ {
+    error_page 401 = @login_redirect;
+    auth_request /auth/validate;
+    auth_request_set $user_groups $upstream_http_x_user_groups;
+
+    proxy_set_header X-Forwarded-Groups $user_groups;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+
+    add_header 'Access-Control-Allow-Origin' '*' always;
+
+    proxy_pass http://auth-service:8000/filter/series/studies/$1/series$is_args$args;
+}
+```
+
+### Result
+
+Now the authorization system has **three layers of filtering**:
+
+1. **Study Level** (`/api/dicom-web/studies`) - Shows only studies with authorized labels
+2. **Series Level** (`/api/dicom-web/studies/{uid}/series`) - **NEW** - Hides unauthorized SR series
+3. **Metadata Level** (`/api/dicom-web/studies/{uid}/metadata`) - Filters individual SR instances
+
+#### User Experience
+
+- ✅ userA creates SR → labeled `userA-sr`
+- ✅ userA returns to study → sees their own SR
+- ✅ userB creates SR on same study → labeled `userB-sr`
+- ✅ userB returns to study → sees only their SR
+- ❌ userA cannot see userB's SR
+- ❌ userB cannot see userA's SR
+- ✅ supervisor sees all SRs from both users
+
+### Deployment
+
+```bash
+# Rebuild auth service with new endpoint
+docker build -t ohif/auth-service:latest -f auth-service/Dockerfile auth-service
+
+# Restart services
+docker stop ohif_auth_service_kc ohif_webapp_orthanc_kc
+docker rm ohif_auth_service_kc ohif_webapp_orthanc_kc
+docker compose up -d
+```
+
+### Logs Verification
+
+```bash
+docker logs -f ohif_auth_service_kc
+```
+
+Expected log output when viewing a study:
+```
+INFO:auth_service:Filter series request for groups: ['annotatorb'], path: studies/1.2.3.../series
+INFO:auth_service:Processing series: 1.2.840...
+INFO:auth_service:  This is an SR series, checking labels
+INFO:auth_service:  SR series has labels: ['userB-sr']
+INFO:auth_service:  ✓ SR series authorized for ['annotatorb']
+INFO:auth_service:Returning 2 of 3 series
+```
+
+---
+
+## UI Customization - October 28, 2025
+
+### Disabling Investigational Use Dialog
+
+**Problem**: Every login showed "OHIF Viewer is for investigational use only" dialog
+
+**Solution**: Added configuration to disable the dialog
+
+**File Modified**: `platform/app/public/config/docker-nginx-orthanc-keycloak.js`
+
+```javascript
+window.config = {
+  routerBasename: '/ohif-viewer',
+  // ... other config
+
+  // Disable investigational use dialog
+  investigationalUseDialog: {
+    option: 'never',  // Options: 'never', 'always', 'configure'
+  },
+
+  // ... rest of config
+};
+```
+
+**Dialog Options:**
+- `'never'` - Never show the dialog
+- `'always'` - Show every session (user must click "Confirm and hide")
+- `'configure'` - Show once, then hide for N days (requires `days` parameter)
+
+**Note**: This change requires rebuilding the OHIF viewer container since the config is embedded during build:
+
+```bash
+docker compose build ohif_viewer
+docker compose up -d ohif_viewer
+```
+
+---
+
+## Complete SR Authorization Architecture
+
+### Full Request Flow
+
+```
+User opens study
+    |
+    v
+OHIF: GET /api/dicom-web/studies/{studyUID}/series
+    |
+    v
+Nginx: Validates JWT → Extracts groups → Routes to auth service
+    |
+    v
+Auth Service: /filter/series/studies/{studyUID}/series
+    |
+    ├─> Fetch all series from Orthanc
+    ├─> For each series:
+    │   ├─> Is it an SR? (check SOPClassUID)
+    │   ├─> If SR: Get instance labels
+    │   ├─> Check if user group matches label
+    │   └─> Include/exclude series
+    └─> Return filtered series list
+    |
+    v
+OHIF: Receives filtered list, displays only authorized series
+```
+
+### SR Labeling Flow (Upload)
+
+```
+User creates SR annotation
+    |
+    v
+OHIF: POST /api/dicom-web/studies (STOW-RS)
+    |
+    v
+Nginx: Routes to auth service upload proxy
+    |
+    v
+Auth Service: /upload/studies
+    |
+    ├─> Extracts user group from JWT
+    ├─> Determines label (userA-sr, userB-sr, admin-sr)
+    ├─> Forwards STOW-RS to Orthanc
+    ├─> Parses response to get created instance UIDs
+    ├─> For each instance:
+    │   ├─> Find Orthanc internal ID
+    │   └─> PUT label via Orthanc API
+    └─> Returns STOW-RS response to OHIF
+```
+
+### Key Files Summary
+
+| File | Purpose | Key Changes |
+|------|---------|-------------|
+| `auth_service.py` | Authorization logic | Added `/filter/series/<path>` endpoint |
+| `nginx.conf` | Request routing | Added series filtering location blocks |
+| `docker-nginx-orthanc-keycloak.js` | OHIF config | Disabled investigational use dialog |
+
+---
+
 **Created**: October 26, 2025
+**Last Updated**: October 28, 2025 (SR series filtering, UI customization)
 **Author**: Claude (Anthropic)
 **Tested**: WSL2 Ubuntu, Docker Compose

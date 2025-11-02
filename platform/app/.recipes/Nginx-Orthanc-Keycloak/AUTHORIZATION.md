@@ -328,3 +328,25 @@ Then customize `auth_service.py` to enforce team-to-project mappings.
 4. **Create project labels** for study assignments
 5. **Set up audit logging** for compliance
 6. **Configure backup** for Orthanc database
+
+---
+
+## Recent Updates - October 28, 2025
+
+### SR Series Filtering Fix
+
+**Problem Solved**: Users couldn't see their own SR reports when returning to a study.
+
+**Solution**: Added series-level filtering endpoint that filters out unauthorized SR series before OHIF tries to load them.
+
+**Changes Made**:
+1. **Auth Service**: Added `/filter/series/<path:path>` endpoint ([auth_service.py:780-917](auth-service/auth_service.py#L780-L917))
+2. **Nginx**: Added series filtering location blocks (lines 189-203, 538-552)
+3. **OHIF Config**: Disabled investigational use dialog
+
+**Result**: Now the system has three layers of filtering:
+- Study level (shows only authorized studies)
+- **Series level** (NEW - hides unauthorized SR series)
+- Metadata level (filters individual SR instances)
+
+**See [claude.md](claude.md)** for detailed documentation of the SR authorization architecture and today's changes.

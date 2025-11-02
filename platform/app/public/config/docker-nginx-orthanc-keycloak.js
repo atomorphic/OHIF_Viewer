@@ -4,6 +4,10 @@ window.config = {
   extensions: [],
   modes: [],
   customizationService: {},
+  // Disable investigational use dialog
+  investigationalUseDialog: {
+    option: 'never',
+  },
   showStudyList: true,
   maxNumberOfWebWorkers: 3,
   showWarningMessageForCrossOrigin: true,

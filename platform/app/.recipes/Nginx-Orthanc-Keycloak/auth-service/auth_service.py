@@ -22,7 +22,7 @@ JWT_SECRET = "your-secret-key-change-in-production"
 USERS = {
     "userA": {"password": "passwordA", "groups": ["annotatorA"]},
     "userB": {"password": "passwordB", "groups": ["annotatorB"]},
-    "admin": {"password": "admin123", "groups": ["pacsadmin"]}
+    "supervisor": {"password": "supervisor", "groups": ["pacsadmin"]}
 }
 
 # Add after_request handler to log all responses
@@ -398,7 +398,7 @@ def login():
                     Test accounts:<br>
                     userA / passwordA<br>
                     userB / passwordB<br>
-                    admin / admin123
+                    supervisor / supervisor
                 </div>
             </div>
         </body>
@@ -581,6 +581,340 @@ def filter_studies():
     except Exception as e:
         logger.error(f"Filter studies error: {e}", exc_info=True)
         return jsonify([]), 500
+
+
+@app.route('/upload/studies', methods=['POST'])
+def upload_studies():
+    """
+    Proxy for STOW-RS that labels created instances with user's group
+    This ensures SRs created by userA are labeled and only visible to userA
+    """
+    import requests
+
+    try:
+        # Get user's groups from header
+        groups_header = request.headers.get('X-Forwarded-Groups', '')
+        groups = [g.strip().lower() for g in groups_header.split(',') if g.strip()]
+
+        logger.info(f"SR upload request for groups: {groups}")
+
+        # Determine the label to apply
+        user_label = None
+        if 'pacsadmin' in groups:
+            user_label = 'admin-sr'
+        elif 'annotatora' in groups:
+            user_label = 'userA-sr'
+        elif 'annotatorb' in groups:
+            user_label = 'userB-sr'
+
+        if not user_label:
+            logger.error(f"Unknown user group: {groups}")
+            return Response('Unauthorized', status=403)
+
+        # Forward the STOW-RS request to Orthanc
+        headers = {
+            'Content-Type': request.headers.get('Content-Type', 'multipart/related'),
+            'Accept': request.headers.get('Accept', 'application/dicom+json')
+        }
+
+        orthanc_response = requests.post(
+            'http://orthanc:8042/dicom-web/studies',
+            data=request.get_data(),
+            headers=headers
+        )
+
+        logger.info(f"Orthanc STOW-RS response: {orthanc_response.status_code}")
+
+        if orthanc_response.status_code in [200, 201]:
+            # Parse response to get created instances
+            try:
+                # STOW-RS response contains ReferencedSOPSequence
+                response_data = orthanc_response.json()
+                logger.info(f"STOW-RS response data: {response_data}")
+
+                # Extract instance UIDs from response
+                # Response format varies, try to find ReferencedSOPInstanceUID
+                instance_uids = []
+
+                # Try different response formats
+                if isinstance(response_data, dict):
+                    # Check for ReferencedSOPSequence (00081199)
+                    ref_sop_seq = response_data.get('00081199', {}).get('Value', [])
+                    for item in ref_sop_seq:
+                        instance_uid = item.get('00081155', {}).get('Value', [None])[0]
+                        if instance_uid:
+                            instance_uids.append(instance_uid)
+
+                logger.info(f"Extracted instance UIDs: {instance_uids}")
+
+                # Label each created instance
+                for instance_uid in instance_uids:
+                    # Find instance in Orthanc
+                    find_resp = requests.post('http://orthanc:8042/tools/find', json={
+                        "Level": "Instance",
+                        "Query": {
+                            "SOPInstanceUID": instance_uid
+                        }
+                    })
+
+                    if find_resp.status_code == 200:
+                        orthanc_ids = find_resp.json()
+                        if orthanc_ids:
+                            orthanc_instance_id = orthanc_ids[0]
+                            # Apply label
+                            label_resp = requests.put(
+                                f'http://orthanc:8042/instances/{orthanc_instance_id}/labels/{user_label}'
+                            )
+                            logger.info(f"Labeled instance {orthanc_instance_id} with {user_label}: {label_resp.status_code}")
+
+            except Exception as e:
+                logger.error(f"Error labeling instances: {e}", exc_info=True)
+
+        # Return original Orthanc response
+        return Response(
+            orthanc_response.content,
+            status=orthanc_response.status_code,
+            content_type=orthanc_response.headers.get('Content-Type')
+        )
+
+    except Exception as e:
+        logger.error(f"Upload proxy error: {e}", exc_info=True)
+        return Response('Internal server error', status=500)
+
+
+@app.route('/filter/metadata/<path:path>', methods=['GET'])
+def filter_metadata(path):
+    """
+    Filter metadata to hide SRs that don't belong to the user
+    Path format: studies/{studyUID}/metadata or studies/{studyUID}/series/{seriesUID}/metadata
+    """
+    import requests
+
+    try:
+        # Get user's groups from header
+        groups_header = request.headers.get('X-Forwarded-Groups', '')
+        groups = [g.strip().lower() for g in groups_header.split(',') if g.strip()]
+
+        logger.info(f"Filter metadata request for groups: {groups}, path: {path}")
+
+        # Get metadata from Orthanc
+        metadata_url = f'http://orthanc:8042/dicom-web/{path}'
+        metadata_response = requests.get(metadata_url, params=request.args)
+
+        if metadata_response.status_code != 200:
+            return Response(metadata_response.content, status=metadata_response.status_code)
+
+        # Admin sees everything
+        if 'pacsadmin' in groups or 'senior' in groups:
+            logger.info("Admin/senior - returning all metadata")
+            return Response(
+                metadata_response.content,
+                status=metadata_response.status_code,
+                content_type=metadata_response.headers.get('Content-Type')
+            )
+
+        # Parse metadata and filter SRs
+        metadata = metadata_response.json()
+        filtered_metadata = []
+
+        for instance_meta in metadata:
+            # Check if this is an SR (SOPClassUID check)
+            sop_class_uid = instance_meta.get('00080016', {}).get('Value', [None])[0]
+
+            # SR SOP Class UIDs typically contain "1.2.840.10008.5.1.4.1.1.88"
+            is_sr = sop_class_uid and '1.2.840.10008.5.1.4.1.1.88' in sop_class_uid
+
+            if is_sr:
+                # This is an SR - check if user owns it
+                instance_uid = instance_meta.get('00080018', {}).get('Value', [None])[0]
+
+                if instance_uid:
+                    # Find instance in Orthanc and check labels
+                    find_resp = requests.post('http://orthanc:8042/tools/find', json={
+                        "Level": "Instance",
+                        "Query": {
+                            "SOPInstanceUID": instance_uid
+                        }
+                    })
+
+                    if find_resp.status_code == 200:
+                        orthanc_ids = find_resp.json()
+                        if orthanc_ids:
+                            orthanc_instance_id = orthanc_ids[0]
+                            labels_resp = requests.get(f'http://orthanc:8042/instances/{orthanc_instance_id}/labels')
+
+                            if labels_resp.status_code == 200:
+                                labels = labels_resp.json()
+                                logger.info(f"SR instance {instance_uid} has labels: {labels}")
+
+                                # Check if user can see this SR
+                                authorized = False
+                                if 'annotatora' in groups and 'userA-sr' in labels:
+                                    authorized = True
+                                elif 'annotatorb' in groups and 'userB-sr' in labels:
+                                    authorized = True
+                                elif 'admin-sr' in labels:
+                                    authorized = True  # All users can see admin SRs
+
+                                if authorized:
+                                    filtered_metadata.append(instance_meta)
+                                    logger.info(f"✓ SR authorized for {groups}")
+                                else:
+                                    logger.info(f"✗ SR NOT authorized for {groups}")
+                                continue
+
+                # If we couldn't check labels, exclude by default
+                logger.info(f"Could not verify SR ownership, excluding")
+            else:
+                # Not an SR, include it
+                filtered_metadata.append(instance_meta)
+
+        logger.info(f"Returning {len(filtered_metadata)} of {len(metadata)} instances")
+        return jsonify(filtered_metadata)
+
+    except Exception as e:
+        logger.error(f"Filter metadata error: {e}", exc_info=True)
+        return Response('Internal server error', status=500)
+
+
+@app.route('/filter/series/<path:path>', methods=['GET'])
+def filter_series(path):
+    """
+    Filter series to hide SR series that don't belong to the user
+    Path format: studies/{studyUID}/series
+    """
+    import requests
+
+    try:
+        # Get user's groups from header
+        groups_header = request.headers.get('X-Forwarded-Groups', '')
+        groups = [g.strip().lower() for g in groups_header.split(',') if g.strip()]
+
+        logger.info(f"Filter series request for groups: {groups}, path: {path}")
+
+        # Get series from Orthanc
+        series_url = f'http://orthanc:8042/dicom-web/{path}'
+        series_response = requests.get(series_url, params=request.args)
+
+        if series_response.status_code != 200:
+            return Response(series_response.content, status=series_response.status_code)
+
+        # Admin sees everything
+        if 'pacsadmin' in groups or 'senior' in groups:
+            logger.info("Admin/senior - returning all series")
+            return Response(
+                series_response.content,
+                status=series_response.status_code,
+                content_type=series_response.headers.get('Content-Type')
+            )
+
+        # Parse series and filter SR series
+        series_list = series_response.json()
+        filtered_series = []
+
+        for series in series_list:
+            # Get SeriesInstanceUID
+            series_uid = series.get('0020000E', {}).get('Value', [None])[0]
+
+            if not series_uid:
+                # Include series without UID (shouldn't happen)
+                filtered_series.append(series)
+                continue
+
+            logger.info(f"Processing series: {series_uid}")
+
+            # Check if this is an SR series by getting one instance and checking SOPClassUID
+            # First, find the series in Orthanc
+            find_resp = requests.post('http://orthanc:8042/tools/find', json={
+                "Level": "Series",
+                "Query": {
+                    "SeriesInstanceUID": series_uid
+                }
+            })
+
+            if find_resp.status_code != 200:
+                logger.info(f"  Could not find series in Orthanc, including by default")
+                filtered_series.append(series)
+                continue
+
+            orthanc_series_ids = find_resp.json()
+            if not orthanc_series_ids:
+                logger.info(f"  No Orthanc ID found, including by default")
+                filtered_series.append(series)
+                continue
+
+            orthanc_series_id = orthanc_series_ids[0]
+
+            # Get instances in this series
+            instances_resp = requests.get(f'http://orthanc:8042/series/{orthanc_series_id}')
+            if instances_resp.status_code != 200:
+                logger.info(f"  Could not get series details, including by default")
+                filtered_series.append(series)
+                continue
+
+            series_info = instances_resp.json()
+            instance_ids = series_info.get('Instances', [])
+
+            if not instance_ids:
+                logger.info(f"  No instances in series, including by default")
+                filtered_series.append(series)
+                continue
+
+            # Check first instance to determine if this is an SR series
+            first_instance_id = instance_ids[0]
+            instance_resp = requests.get(f'http://orthanc:8042/instances/{first_instance_id}/simplified-tags')
+
+            if instance_resp.status_code != 200:
+                logger.info(f"  Could not get instance tags, including by default")
+                filtered_series.append(series)
+                continue
+
+            tags = instance_resp.json()
+            sop_class_uid = tags.get('SOPClassUID', '')
+
+            # Check if this is an SR
+            is_sr = '1.2.840.10008.5.1.4.1.1.88' in sop_class_uid
+
+            if not is_sr:
+                # Not an SR series, include it
+                logger.info(f"  Not an SR series, including")
+                filtered_series.append(series)
+                continue
+
+            # This is an SR series - check if user owns it
+            logger.info(f"  This is an SR series, checking labels")
+
+            # Get labels for the first instance (all instances in series should have same user label)
+            labels_resp = requests.get(f'http://orthanc:8042/instances/{first_instance_id}/labels')
+
+            if labels_resp.status_code != 200:
+                logger.info(f"  Could not get labels, excluding by default")
+                continue
+
+            labels = labels_resp.json()
+            logger.info(f"  SR series has labels: {labels}")
+
+            # Check if user can see this SR series
+            authorized = False
+            if 'annotatora' in groups and 'userA-sr' in labels:
+                authorized = True
+            elif 'annotatorb' in groups and 'userB-sr' in labels:
+                authorized = True
+            elif 'admin-sr' in labels:
+                authorized = True  # All users can see admin SRs
+
+            if authorized:
+                filtered_series.append(series)
+                logger.info(f"  ✓ SR series authorized for {groups}")
+            else:
+                logger.info(f"  ✗ SR series NOT authorized for {groups}")
+
+        logger.info(f"Returning {len(filtered_series)} of {len(series_list)} series")
+        return jsonify(filtered_series)
+
+    except Exception as e:
+        logger.error(f"Filter series error: {e}", exc_info=True)
+        return Response('Internal server error', status=500)
 
 
 @app.route('/test/user-profile', methods=['GET'])
